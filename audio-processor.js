@@ -50,12 +50,23 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     // ── FFT 工作区 ──────────────────────────────────────────────
     this.fRe = Array.from({ length: MAX_CH }, () => new Float32Array(this.FFT_SIZE));
     this.fIm = Array.from({ length: MAX_CH }, () => new Float32Array(this.FFT_SIZE));
+    this.magBuf      = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF));
+    this.phaseBuf    = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF));
+    this.outMagBuf   = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF));
+    this.rawGainBuf  = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF));
+    this.smoothGainBuf = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF));
+    this.prevGain    = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF).fill(1));
 
     // ── 噪声底噪估计（最小统计量法）────────────────────────────
     this.noiseFloor  = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF).fill(1e-6));
-    this.magHistory  = Array.from({ length: MAX_CH }, () => []); // 幅度谱历史
     this.HIST_LEN    = 25;   // 历史帧数（≈ 370 ms @ 512/44100）
     this.NOISE_ALPHA = 0.08; // 噪声底噪平滑系数
+    // 固定长度环形历史缓冲，避免实时分配引发杂音
+    this.magHistory  = Array.from({ length: MAX_CH }, () =>
+      Array.from({ length: this.HIST_LEN }, () => new Float32Array(this.HALF))
+    );
+    this.magHistLen  = new Int32Array(MAX_CH);
+    this.magHistPos  = new Int32Array(MAX_CH);
 
     // ── 接收来自 content/offscreen 的控制消息 ──────────────────
     this.port.onmessage = (e) => {
@@ -135,8 +146,8 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
 
     // 2. FFT → 幅度谱 + 相位谱
     this._fft(re, im);
-    const mag   = new Float32Array(HALF);
-    const phase = new Float32Array(HALF);
+    const mag   = this.magBuf[ch];
+    const phase = this.phaseBuf[ch];
     for (let k = 0; k < HALF; k++) {
       mag[k]   = Math.hypot(re[k], im[k]);
       phase[k] = Math.atan2(im[k], re[k]);
@@ -144,47 +155,80 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
 
     // 3. 更新噪声底噪估计（最小统计量）
     const hist = this.magHistory[ch];
-    hist.push(mag.slice()); // 保存当前幅度谱快照
-    if (hist.length > this.HIST_LEN) hist.shift();
+    const histPos = this.magHistPos[ch];
+    hist[histPos].set(mag); // 写入环形历史
+    this.magHistPos[ch] = (histPos + 1) % this.HIST_LEN;
+    if (this.magHistLen[ch] < this.HIST_LEN) this.magHistLen[ch]++;
 
     const floor = this.noiseFloor[ch];
+    const histLen = this.magHistLen[ch];
     for (let k = 0; k < HALF; k++) {
       let minVal = Infinity;
-      for (let h = 0; h < hist.length; h++) {
+      for (let h = 0; h < histLen; h++) {
         if (hist[h][k] < minVal) minVal = hist[h][k];
       }
       // 指数平滑：噪声底噪缓慢向最小值收敛
-      floor[k] = (1 - this.NOISE_ALPHA) * floor[k] + this.NOISE_ALPHA * minVal;
+      floor[k] = Math.max(1e-8, (1 - this.NOISE_ALPHA) * floor[k] + this.NOISE_ALPHA * minVal);
     }
 
-    // 4. 计算 Wiener 增益并抑制人声频段
+    // 4. 计算增益并抑制人声频段（频域+时域平滑，降低“兹拉兹拉”音乐噪声）
     const sr       = globalThis.sampleRate || 44100;
     const binHz    = sr / N;
-    const outMag   = new Float32Array(HALF);
+    const outMag   = this.outMagBuf[ch];
+    const rawGain  = this.rawGainBuf[ch];
+    const smoothGain = this.smoothGainBuf[ch];
+    const prevGain = this.prevGain[ch];
     const alpha    = this.strength;
 
     // 根据模式确定人声抑制频率范围
     let vocalLow  = 200;
     let vocalHigh = 4000;
+    let gainFloor = 0.08;
+    let overSub   = 1.2 + alpha * 1.3;
+    let timeSmooth = 0.74;
+    let transientRatio = 6.0;
     if (this.mode === 'commentary-only') {
       vocalLow  = 80;
       vocalHigh = 6000;
-      // 更激进：增强抑制系数
+      gainFloor = 0.10;
+      overSub   = 1.4 + alpha * 1.6;
+      timeSmooth = 0.82;
+      transientRatio = 4.5;
     }
 
     for (let k = 0; k < HALF; k++) {
       const freq = k * binHz;
+      rawGain[k] = 1.0;
+      outMag[k] = mag[k];
 
       if (freq >= vocalLow && freq <= vocalHigh) {
-        // 人声频段：应用 Wiener 滤波增益
-        // noiseEst 略大于底噪，模拟过估计（防止语音失真）
-        const noiseEst = floor[k] * (1.0 + alpha * 2.0);
-        // Wiener 增益：W = max(floor, 1 - noiseEst/mag)
-        const gain = Math.max(0.05, (mag[k] - alpha * noiseEst) / (mag[k] + 1e-10));
-        outMag[k] = mag[k] * gain;
+        const noiseEst = floor[k] * (1.0 + alpha * 1.8);
+        const curMag = Math.max(mag[k], 1e-8);
+        let gain = 1.0 - (overSub * noiseEst) / curMag;
+
+        // 瞬态/解说突发保护，减少闷声与抽吸
+        if (curMag > noiseEst * transientRatio) gain = Math.max(gain, 0.75);
+
+        rawGain[k] = Math.min(1.0, Math.max(gainFloor, gain));
+      }
+    }
+
+    // 频域平滑：抑制孤立窄带尖刺（音乐噪声）
+    for (let k = 0; k < HALF; k++) {
+      const l = k > 0 ? k - 1 : k;
+      const r = k < HALF - 1 ? k + 1 : k;
+      smoothGain[k] = 0.2 * rawGain[l] + 0.6 * rawGain[k] + 0.2 * rawGain[r];
+    }
+
+    // 时域平滑：降低帧间增益抖动导致的“兹拉”感
+    for (let k = 0; k < HALF; k++) {
+      const freq = k * binHz;
+      if (freq >= vocalLow && freq <= vocalHigh) {
+        const g = timeSmooth * prevGain[k] + (1 - timeSmooth) * smoothGain[k];
+        prevGain[k] = g;
+        outMag[k] = mag[k] * g;
       } else {
-        // 人声范围外（低频击球声、高频环境音）：直接透传
-        outMag[k] = mag[k];
+        prevGain[k] = 1.0;
       }
     }
 
