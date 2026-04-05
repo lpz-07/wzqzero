@@ -300,10 +300,11 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
 
     // 频域平滑：抑制孤立窄带尖刺（音乐噪声）
     for (let k = 0; k < HALF; k++) {
+      const freq = k * binHz;
+      const inFemaleBand = freq >= femaleBandLow && freq <= femaleBandHigh;
       const l = k > 0 ? k - 1 : k;
       const r = k < HALF - 1 ? k + 1 : k;
-      const freq = k * binHz;
-      if (freq >= femaleBandLow && freq <= femaleBandHigh) {
+      if (inFemaleBand) {
         const l2 = k > 1 ? k - 2 : l;
         const r2 = k < HALF - 2 ? k + 2 : r;
         // 女声频段使用更宽核平滑，抑制窄带“音乐噪声”
@@ -324,8 +325,9 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     // 时域平滑：降低帧间增益抖动导致的“兹拉”感
     for (let k = 0; k < HALF; k++) {
       const freq = k * binHz;
+      const inFemaleBand = freq >= femaleBandLow && freq <= femaleBandHigh;
       if (freq >= vocalLow && freq <= vocalHigh) {
-        const localTimeSmooth = (freq >= femaleBandLow && freq <= femaleBandHigh)
+        const localTimeSmooth = inFemaleBand
           ? Math.max(timeSmooth, femaleBandTimeSmooth)
           : timeSmooth;
         const g = localTimeSmooth * prevGain[k] + (1 - localTimeSmooth) * smoothGain[k];
