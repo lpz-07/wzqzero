@@ -56,6 +56,8 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     this.rawGainBuf  = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF));
     this.smoothGainBuf = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF));
     this.prevGain    = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF).fill(1));
+    this.prevMag     = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF));
+    this.transientHold = new Int32Array(MAX_CH);
 
     // ── 噪声底噪估计（最小统计量法）────────────────────────────
     this.noiseFloor  = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF).fill(1e-6));
@@ -70,6 +72,12 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
         timeSmooth: 0.74,    // 帧间平滑，抑制增益抖动
         transientRatio: 6.0, // 瞬态保护门限，保护解说突发
         transientGainFloor: 0.75,
+        femaleBandLow: 700,   // 女声“加油”主能量频带
+        femaleBandHigh: 2800,
+        femaleSuppressBoost: 1.35,
+        transientFluxThreshold: 0.55, // 宽带瞬态阈值（保护击球）
+        transientHoldFrames: 2,
+        transientProtectScale: 0.60,  // 瞬态时降低抑制强度
       },
       'commentary-only': {
         gainFloor: 0.10,
@@ -78,6 +86,12 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
         timeSmooth: 0.82,
         transientRatio: 4.5,
         transientGainFloor: 0.75,
+        femaleBandLow: 650,
+        femaleBandHigh: 3200,
+        femaleSuppressBoost: 1.45,
+        transientFluxThreshold: 0.60,
+        transientHoldFrames: 2,
+        transientProtectScale: 0.65,
       },
     };
     // 3 点频域平滑核，减少孤立频点“音乐噪声”
@@ -214,10 +228,32 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     let timeSmooth = modeParams.timeSmooth;
     let transientRatio = modeParams.transientRatio;
     let transientGainFloor = modeParams.transientGainFloor;
+    let femaleBandLow = modeParams.femaleBandLow;
+    let femaleBandHigh = modeParams.femaleBandHigh;
+    let femaleSuppressBoost = modeParams.femaleSuppressBoost;
+    let transientFluxThreshold = modeParams.transientFluxThreshold;
+    let transientHoldFrames = modeParams.transientHoldFrames;
+    let transientProtectScale = modeParams.transientProtectScale;
     if (this.mode === 'commentary-only') {
       vocalLow  = 80;
       vocalHigh = 6000;
     }
+
+    // 帧级瞬态检测：乒乓球击球通常是宽带突发，观众“加油”更偏持续人声
+    const prevMag = this.prevMag[ch];
+    let fluxNum = 0;
+    let fluxDen = 0;
+    for (let k = 1; k < HALF; k++) {
+      const cur = mag[k];
+      const delta = cur - prevMag[k];
+      if (delta > 0) fluxNum += delta;
+      fluxDen += cur;
+      prevMag[k] = cur;
+    }
+    const spectralFlux = fluxNum / (fluxDen + 1e-8);
+    if (spectralFlux > transientFluxThreshold) this.transientHold[ch] = transientHoldFrames;
+    const transientActive = this.transientHold[ch] > 0;
+    if (this.transientHold[ch] > 0) this.transientHold[ch]--;
 
     for (let k = 0; k < HALF; k++) {
       const freq = k * binHz;
@@ -227,7 +263,13 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
       if (freq >= vocalLow && freq <= vocalHigh) {
         const noiseEst = floor[k] * (1.0 + alpha * 1.8);
         const curMag = Math.max(mag[k], 1e-8);
-        let gain = Math.max(0, 1.0 - (overSub * noiseEst) / curMag);
+        let suppressScale = 1.0;
+        // 对“女声加油”主频段加重抑制
+        if (freq >= femaleBandLow && freq <= femaleBandHigh) suppressScale *= femaleSuppressBoost;
+        // 瞬态保护：击球时降低抑制，保留球击台清脆感
+        if (transientActive && (freq < 420 || freq > femaleBandHigh)) suppressScale *= transientProtectScale;
+
+        let gain = Math.max(0, 1.0 - (overSub * suppressScale * noiseEst) / curMag);
 
         // 瞬态/解说突发保护，减少闷声与抽吸
         if (curMag > noiseEst * transientRatio) gain = Math.max(gain, transientGainFloor);
