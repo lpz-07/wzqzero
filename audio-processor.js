@@ -61,6 +61,29 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     this.noiseFloor  = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF).fill(1e-6));
     this.HIST_LEN    = 25;   // 历史帧数（≈ 370 ms @ 512/44100）
     this.NOISE_ALPHA = 0.08; // 噪声底噪平滑系数
+    // 模式参数（经验调参值，用于平衡抑制强度与语音自然度）
+    this.MODE_PARAMS = {
+      'crowd-suppress': {
+        gainFloor: 0.08,     // 增益下限，避免过度衰减导致金属感
+        overSubBase: 1.2,    // 过减基值（越大越强）
+        overSubScale: 1.3,   // 随 strength 增加的附加过减
+        timeSmooth: 0.74,    // 帧间平滑，抑制增益抖动
+        transientRatio: 6.0, // 瞬态保护门限，保护解说突发
+      },
+      'commentary-only': {
+        gainFloor: 0.10,
+        overSubBase: 1.4,
+        overSubScale: 1.6,
+        timeSmooth: 0.82,
+        transientRatio: 4.5,
+      },
+    };
+    // 3 点频域平滑核，减少孤立频点“音乐噪声”
+    this.FREQ_SMOOTH = {
+      left: 0.2,
+      center: 0.6,
+      right: 0.2,
+    };
     // 固定长度环形历史缓冲，避免实时分配引发杂音
     this.magHistory  = Array.from({ length: MAX_CH }, () =>
       Array.from({ length: this.HIST_LEN }, () => new Float32Array(this.HALF))
@@ -183,17 +206,14 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     // 根据模式确定人声抑制频率范围
     let vocalLow  = 200;
     let vocalHigh = 4000;
-    let gainFloor = 0.08;
-    let overSub   = 1.2 + alpha * 1.3;
-    let timeSmooth = 0.74;
-    let transientRatio = 6.0;
+    const modeParams = this.MODE_PARAMS[this.mode] || this.MODE_PARAMS['crowd-suppress'];
+    let gainFloor = modeParams.gainFloor;
+    let overSub   = modeParams.overSubBase + alpha * modeParams.overSubScale;
+    let timeSmooth = modeParams.timeSmooth;
+    let transientRatio = modeParams.transientRatio;
     if (this.mode === 'commentary-only') {
       vocalLow  = 80;
       vocalHigh = 6000;
-      gainFloor = 0.10;
-      overSub   = 1.4 + alpha * 1.6;
-      timeSmooth = 0.82;
-      transientRatio = 4.5;
     }
 
     for (let k = 0; k < HALF; k++) {
@@ -217,7 +237,10 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     for (let k = 0; k < HALF; k++) {
       const l = k > 0 ? k - 1 : k;
       const r = k < HALF - 1 ? k + 1 : k;
-      smoothGain[k] = 0.2 * rawGain[l] + 0.6 * rawGain[k] + 0.2 * rawGain[r];
+      smoothGain[k] =
+        this.FREQ_SMOOTH.left * rawGain[l] +
+        this.FREQ_SMOOTH.center * rawGain[k] +
+        this.FREQ_SMOOTH.right * rawGain[r];
     }
 
     // 时域平滑：降低帧间增益抖动导致的“兹拉”感
