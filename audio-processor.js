@@ -63,9 +63,9 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     this.noiseFloor  = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF).fill(1e-6));
     this.HIST_LEN    = 25;   // 历史帧数（≈ 370 ms @ 512/44100）
     this.NOISE_ALPHA = 0.08; // 噪声底噪平滑系数
-    this.MIN_EPSILON = 1e-8;
-    this.NOISE_EST_SCALE = 1.8;
-    this.TRANSIENT_PROTECT_FREQ_LOW = 420;
+    this.MIN_EPSILON = 1e-8; // 数值稳定下限，防止除零与极小值抖动
+    this.NOISE_EST_SCALE = 1.8; // 噪声估计随强度放大系数（经验值，平衡抑制与失真）
+    this.TRANSIENT_PROTECT_FREQ_LOW = 420; // 击球保护的低频边界（Hz），保留乒乓球击打冲击感
     // 模式参数（经验调参值，用于平衡抑制强度与语音自然度）
     this.MODE_PARAMS = {
       'crowd-suppress': {
@@ -210,7 +210,8 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
         if (hist[h][k] < minVal) minVal = hist[h][k];
       }
       // 指数平滑：噪声底噪缓慢向最小值收敛
-      floor[k] = (1 - this.NOISE_ALPHA) * floor[k] + this.NOISE_ALPHA * Math.max(this.MIN_EPSILON, minVal);
+      const floorMin = Math.max(this.MIN_EPSILON, minVal);
+      floor[k] = (1 - this.NOISE_ALPHA) * floor[k] + this.NOISE_ALPHA * floorMin;
     }
 
     // 4. 计算增益并抑制人声频段（频域+时域平滑，降低“兹拉兹拉”音乐噪声）
