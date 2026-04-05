@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>观赛降噪助手</title>
+  <style>
+    /* ── 基础变量（深色 / 浅色自适应）─────────────────────────── */
+    :root {
+      --bg:        #ffffff;
+      --bg2:       #f4f6f9;
+      --border:    #d8dde6;
+      --text:      #1a1d23;
+      --text2:     #5a6072;
+      --accent:    #2563eb;
+      --accent-h:  #1d4ed8;
+      --green:     #16a34a;
+      --red:       #dc2626;
+      --radius:    10px;
+      --shadow:    0 4px 20px rgba(0,0,0,.10);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg:       #1e2130;
+        --bg2:      #252a3a;
+        --border:   #363d52;
+        --text:     #e8eaf0;
+        --text2:    #8891a8;
+        --accent:   #3b82f6;
+        --accent-h: #60a5fa;
+        --green:    #22c55e;
+        --red:      #f87171;
+        --shadow:   0 4px 20px rgba(0,0,0,.40);
+      }
+    }
+
+    /* ── 全局 ──────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                   "PingFang SC", "Hiragino Sans GB", sans-serif;
+      font-size: 14px;
+      width: 320px;
+      background: var(--bg);
+      color: var(--text);
+      padding: 16px;
+    }
+
+    /* ── 顶部标题栏 ─────────────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .header-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .header-icon svg { width: 20px; height: 20px; fill: #fff; }
+    .header-title   { font-size: 15px; font-weight: 600; line-height: 1.2; }
+    .header-sub     { font-size: 11px; color: var(--text2); margin-top: 2px; }
+
+    /* ── 状态徽章 ───────────────────────────────────────────────── */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 10px;
+      border-radius: var(--radius);
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      margin-bottom: 14px;
+      font-size: 12px;
+      color: var(--text2);
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--text2);
+      transition: background 0.3s;
+    }
+    .status-dot.active  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .status-dot.warning { background: #f59e0b; }
+    #statusText { flex: 1; }
+
+    /* ── 主开关 ─────────────────────────────────────────────────── */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      margin-bottom: 14px;
+    }
+    .toggle-label { font-weight: 600; font-size: 14px; }
+    .toggle-sub   { font-size: 11px; color: var(--text2); margin-top: 2px; }
+
+    /* Switch */
+    .switch { position: relative; width: 44px; height: 24px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; inset: 0;
+      background: var(--border);
+      border-radius: 24px;
+      cursor: pointer;
+      transition: background .3s;
+    }
+    .slider::before {
+      content: '';
+      position: absolute;
+      width: 18px; height: 18px;
+      left: 3px; top: 3px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform .3s;
+      box-shadow: 0 1px 3px rgba(0,0,0,.2);
+    }
+    .switch input:checked + .slider           { background: var(--accent); }
+    .switch input:checked + .slider::before   { transform: translateX(20px); }
+
+    /* ── 分区卡片 ───────────────────────────────────────────────── */
+    .section {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      background: var(--bg2);
+    }
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      color: var(--text2);
+      margin-bottom: 10px;
+    }
+
+    /* ── 强度滑块 ───────────────────────────────────────────────── */
+    .strength-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .strength-row input[type=range] {
+      flex: 1;
+      -webkit-appearance: none;
+      height: 5px;
+      border-radius: 5px;
+      background: var(--border);
+      outline: none;
+      cursor: pointer;
+    }
+    .strength-row input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+      box-shadow: 0 1px 4px rgba(0,0,0,.3);
+    }
+    .strength-val {
+      font-size: 13px;
+      font-weight: 600;
+      min-width: 34px;
+      text-align: right;
+      color: var(--accent);
+    }
+
+    /* ── 预设模式 ───────────────────────────────────────────────── */
+    .mode-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 6px;
+    }
+    .mode-btn {
+      padding: 8px 6px;
+      border-radius: 8px;
+      border: 1.5px solid var(--border);
+      background: var(--bg);
+      cursor: pointer;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text);
+      transition: border-color .2s, background .2s, color .2s;
+      line-height: 1.4;
+    }
+    .mode-btn .mode-icon { font-size: 18px; display: block; margin-bottom: 3px; }
+    .mode-btn:hover    { border-color: var(--accent); background: var(--bg2); }
+    .mode-btn.selected {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+
+    /* ── 捕获模式 ───────────────────────────────────────────────── */
+    .capture-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 13px;
+    }
+    .capture-row select {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 12px;
+      cursor: pointer;
+      outline: none;
+    }
+
+    /* ── CORS 警告横幅 ──────────────────────────────────────────── */
+    .cors-warning {
+      display: none;
+      background: #fef3c7;
+      border: 1px solid #fbbf24;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 11.5px;
+      color: #92400e;
+      margin-bottom: 14px;
+      line-height: 1.5;
+    }
+    .cors-warning.visible { display: block; }
+    @media (prefers-color-scheme: dark) {
+      .cors-warning { background: #431407; border-color: #92400e; color: #fde68a; }
+    }
+
+    /* ── 底部提示 ───────────────────────────────────────────────── */
+    .footer {
+      text-align: center;
+      font-size: 11px;
+      color: var(--text2);
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+      line-height: 1.6;
+    }
+    .footer kbd {
+      font-family: monospace;
+      background: var(--border);
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-size: 10px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 标题栏 -->
+  <div class="header">
+    <div class="header-icon">
+      <svg viewBox="0 0 24 24"><path d="M12 3C7 3 3 6.6 3 11c0 2.4 1.1 4.6 2.9 6.1l-1 3.5 3.6-1.1C9.5 20.5 10.7 21 12 21c5 0 9-3.6 9-8s-4-10-9-10zm-1 5h2v6h-2V8zm0 7h2v2h-2v-2z"/></svg>
+    </div>
+    <div>
+      <div class="header-title">观赛降噪助手</div>
+      <div class="header-sub">智能抑制观众呐喊声 · WZQ Zero</div>
+    </div>
+  </div>
+
+  <!-- 状态栏 -->
+  <div class="status-bar">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">正在检测媒体元素…</span>
+  </div>
+
+  <!-- CORS 警告 -->
+  <div class="cors-warning" id="corsWarning">
+    ⚠️ 当前页面的视频为跨域媒体，直接模式无法处理。<br/>
+    请将「音频捕获模式」切换为 <strong>标签页捕获</strong>，然后重新开启降噪。
+  </div>
+
+  <!-- 主开关 -->
+  <div class="toggle-row">
+    <div>
+      <div class="toggle-label">🔇 观众人声抑制</div>
+      <div class="toggle-sub">开启后实时过滤观众呐喊声</div>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="enableToggle" />
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <!-- 降噪强度 -->
+  <div class="section">
+    <div class="section-title">降噪强度</div>
+    <div class="strength-row">
+      <input type="range" id="strengthSlider" min="0" max="100" step="1" value="70" />
+      <div class="strength-val"><span id="strengthVal">70</span>%</div>
+    </div>
+  </div>
+
+  <!-- 预设模式 -->
+  <div class="section">
+    <div class="section-title">预设模式</div>
+    <div class="mode-grid">
+      <button class="mode-btn selected" data-mode="crowd-suppress">
+        <span class="mode-icon">🏟️</span>观赛模式
+      </button>
+      <button class="mode-btn" data-mode="commentary-only">
+        <span class="mode-icon">🎙️</span>纯解说
+      </button>
+      <button class="mode-btn" data-mode="passthrough">
+        <span class="mode-icon">🔊</span>原声
+      </button>
+    </div>
+  </div>
+
+  <!-- 捕获模式 -->
+  <div class="section">
+    <div class="section-title">音频捕获模式</div>
+    <div class="capture-row">
+      <span>捕获方式</span>
+      <select id="captureModeSelect">
+        <option value="direct">直接模式（同源视频）</option>
+        <option value="tab">标签页捕获（通用）</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- 底部提示 -->
+  <div class="footer">
+    快捷键 <kbd>Alt+S</kbd> 一键开关降噪<br/>
+    仅用于个人观赛，禁止商业用途
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

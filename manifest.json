@@ -1,0 +1,60 @@
+{
+  "manifest_version": 3,
+  "name": "观赛降噪助手 - WZQ Zero",
+  "version": "1.0.0",
+  "description": "智能抑制体育直播观众呐喊声，保留解说和击球声，提升观赛体验",
+
+  "permissions": [
+    "tabCapture",
+    "storage",
+    "offscreen",
+    "activeTab",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": ["*://*/*"],
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["*://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "观赛降噪助手"
+  },
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+
+  "web_accessible_resources": [
+    {
+      "resources": ["audio-processor.js", "offscreen.html"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+
+  "commands": {
+    "toggle-noise-suppression": {
+      "suggested_key": {
+        "default": "Alt+S"
+      },
+      "description": "一键开关降噪"
+    }
+  }
+}
