@@ -306,9 +306,13 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
       //  - femaleRatio 权重最高：加油声在 700~2800Hz 占比通常更高
       //  - sfm 次之：持续喊叫相较解说更“噪声化”，谱平坦度更高
       //  - lowPenalty 为负：低频占比偏高常见于击球/环境低频，不应误判为加油声
+      // femaleRatio: [0.12, 0.40] 作为“从常规语音到显著加油占比”的经验映射区间
       const ratioProb = ratioScore(femaleRatio, 0.12, 0.40);
+      // lowRatio: [0.03, 0.12] 作为“低频偏重（更像击球/环境音）”的惩罚映射区间
       const lowPenalty = ratioScore(lowRatio, 0.03, 0.12);
+      // sfm: [0.22, 0.58] 作为“从较谐波语音到更噪声化喊叫”的经验映射区间
       const sfmProb = ratioScore(sfm, 0.22, 0.58);
+      // 组合权重：0.60(女声占比) + 0.35(噪声化程度) - 0.25(低频惩罚)
       let rawProb = 0.60 * ratioProb + 0.35 * sfmProb - 0.25 * lowPenalty;
       rawProb = clamp01(rawProb);
       // 敏感度→阈值映射（0.55 ~ 0.30）：
