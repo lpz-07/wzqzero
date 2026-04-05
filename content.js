@@ -18,6 +18,8 @@
     enabled:     false,
     strength:    70,
     mode:        'crowd-suppress',
+    aiEnabled:   false,
+    aiSensitivity: 55,
     captureMode: 'direct',
   };
 
@@ -129,6 +131,8 @@
         enabled:  settings.enabled,
         strength: settings.strength / 100,
         mode:     settings.mode,
+        aiEnabled: !!settings.aiEnabled,
+        aiSensitivity: (settings.aiSensitivity ?? 55) / 100,
       });
 
       sourceNode.connect(workletNode);
@@ -162,6 +166,8 @@
           enabled:  settings.enabled,
           strength: settings.strength / 100,
           mode:     settings.mode,
+          aiEnabled: !!settings.aiEnabled,
+          aiSensitivity: (settings.aiSensitivity ?? 55) / 100,
         });
       }
     });

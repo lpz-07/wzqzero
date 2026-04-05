@@ -304,6 +304,25 @@
     </div>
   </div>
 
+  <!-- 超小型 AI 判别增强 -->
+  <div class="section">
+    <div class="section-title">超级小型 AI（实验）</div>
+    <div class="toggle-row" style="margin-bottom:10px;">
+      <div>
+        <div class="toggle-label">🧠 加油声识别增强</div>
+        <div class="toggle-sub">仅在疑似加油帧加重抑制（A/B 可切换）</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="aiToggle" />
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="strength-row">
+      <input type="range" id="aiSensitivitySlider" min="0" max="100" step="1" value="55" />
+      <div class="strength-val"><span id="aiSensitivityVal">55</span>%</div>
+    </div>
+  </div>
+
   <!-- 预设模式 -->
   <div class="section">
     <div class="section-title">预设模式</div>

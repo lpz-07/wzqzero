@@ -15,6 +15,8 @@ const DEFAULT_SETTINGS = {
   enabled:      false,
   strength:     70,          // 0–100
   mode:         'crowd-suppress', // 'crowd-suppress' | 'commentary-only' | 'passthrough'
+  aiEnabled:    false,       // 超小型 AI 判别增强（A/B 开关）
+  aiSensitivity: 55,         // 0–100，越高越容易触发“加油声”增强抑制
   captureMode:  'direct',    // 'direct'（content.js）| 'tab'（tabCapture）
   capturedTabId: null,
 };
@@ -53,6 +55,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const newSettings = message.settings;
       chrome.storage.local.set(newSettings, async () => {
         broadcastToTabs({ type: 'SETTINGS_UPDATED', settings: newSettings });
+        if (offscreenActive) {
+          chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED', settings: newSettings }).catch(() => {});
+        }
 
         // 处理 tabCapture 模式开关
         if ('enabled' in newSettings || 'captureMode' in newSettings) {

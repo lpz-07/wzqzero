@@ -22,6 +22,8 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     this.enabled  = false;
     this.strength = 0.7;   // 0.0（不抑制）~ 1.0（最强抑制）
     this.mode     = 'crowd-suppress'; // 'crowd-suppress' | 'commentary-only' | 'passthrough'
+    this.aiEnabled = false;
+    this.aiSensitivity = 0.55;
 
     // ── FFT 参数 ────────────────────────────────────────────────
     this.FFT_SIZE = 512;
@@ -122,6 +124,8 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
         this.enabled  = !!e.data.enabled;
         this.strength = e.data.strength ?? 0.7;
         this.mode     = e.data.mode     ?? 'crowd-suppress';
+        this.aiEnabled = !!e.data.aiEnabled;
+        this.aiSensitivity = e.data.aiSensitivity ?? 0.55;
       }
     };
   }
@@ -269,6 +273,46 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     const transientActive = this.transientHold[ch] > 0;
     if (this.transientHold[ch] > 0) this.transientHold[ch]--;
 
+    // 超小型 AI 判别层（无外部模型）：以频带能量比例 + 谱平坦度近似识别“持续加油”帧
+    // 仅输出 0~1 的 cheeringProb，用于动态调节既有抑制强度，不替换主算法链路
+    let cheeringProb = 0.0;
+    if (this.aiEnabled) {
+      const clamp01 = (v) => Math.max(0, Math.min(1, v));
+      const ratioScore = (v, lo, hi) => clamp01((v - lo) / (hi - lo + this.MIN_EPSILON));
+      let totalEnergy = this.MIN_EPSILON;
+      let femaleBandEnergy = this.MIN_EPSILON;
+      let lowBandEnergy = this.MIN_EPSILON;
+      let geomLogSum = 0;
+      let arithSum = 0;
+      let flatBins = 0;
+
+      for (let k = 1; k < HALF; k++) {
+        const freq = k * binHz;
+        const m = Math.max(mag[k], this.MIN_EPSILON);
+        totalEnergy += m;
+        if (freq >= femaleBandLow && freq <= femaleBandHigh) femaleBandEnergy += m;
+        if (freq >= 80 && freq <= 350) lowBandEnergy += m;
+        if (freq >= vocalLow && freq <= vocalHigh) {
+          geomLogSum += Math.log(m);
+          arithSum += m;
+          flatBins++;
+        }
+      }
+
+      const femaleRatio = femaleBandEnergy / totalEnergy;
+      const lowRatio = lowBandEnergy / totalEnergy;
+      const sfm = flatBins > 0 ? Math.exp(geomLogSum / flatBins) / (arithSum / flatBins + this.MIN_EPSILON) : 0;
+      // 经验权重：加油声通常具备较高女声带占比、较低低频占比、且谱更“噪声化”
+      const ratioProb = ratioScore(femaleRatio, 0.12, 0.40);
+      const lowPenalty = ratioScore(lowRatio, 0.03, 0.12);
+      const sfmProb = ratioScore(sfm, 0.22, 0.58);
+      let rawProb = 0.60 * ratioProb + 0.35 * sfmProb - 0.25 * lowPenalty;
+      rawProb = clamp01(rawProb);
+      // 由敏感度映射触发门限：敏感度越高，越容易判为加油声
+      const th = 0.55 - 0.25 * this.aiSensitivity;
+      cheeringProb = clamp01((rawProb - th) / (1 - th + this.MIN_EPSILON));
+    }
+
     for (let k = 0; k < HALF; k++) {
       const freq = k * binHz;
       rawGain[k] = 1.0;
@@ -280,6 +324,10 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
         let suppressScale = 1.0;
         // 对“女声加油”主频段加重抑制
         if (freq >= femaleBandLow && freq <= femaleBandHigh) suppressScale *= femaleSuppressBoost;
+        // AI 判别到疑似加油帧时，仅在女声主频段进一步加重抑制
+        if (this.aiEnabled && freq >= femaleBandLow && freq <= femaleBandHigh) {
+          suppressScale *= (1.0 + 0.65 * cheeringProb);
+        }
         // 瞬态保护：击球时仅在女声主频段之外放松抑制，避免“加油”声在保护窗口内被放出来
         if (transientActive && (freq < this.TRANSIENT_PROTECT_FREQ_LOW || freq > femaleBandHigh)) {
           suppressScale *= transientProtectScale;
