@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8" /><title>WZQ Zero Offscreen</title></head>
+<body>
+<!--
+  offscreen.html — Offscreen Document（不可见页面）
+
+  用途：
+    在 tabCapture 模式下，接收标签页音频流 ID，
+    通过 getUserMedia + AudioWorklet 对音频进行实时降噪处理，
+    然后将处理后的音频输出到扬声器。
+    原标签页音频由 background.js 通过 chrome.tabs.update({muted:true}) 静音。
+-->
+<script src="offscreen.js"></script>
+</body>
+</html>
