@@ -65,7 +65,7 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     this.NOISE_ALPHA = 0.08; // 噪声底噪平滑系数
     this.MIN_EPSILON = 1e-8; // 数值稳定下限，防止除零与极小值抖动
     this.NOISE_EST_SCALE = 1.8; // 噪声估计随强度放大系数（经验值，平衡抑制与失真）
-    this.TRANSIENT_PROTECT_FREQ_LOW = 420; // 击球保护的低频边界（Hz），保留乒乓球击打冲击感
+    this.TRANSIENT_PROTECT_FREQ_LOW = 420; // 经验边界（Hz）：实测可覆盖击球瞬态低频冲击，同时尽量不放大女声喊话主体
     // 模式参数（经验调参值，用于平衡抑制强度与语音自然度）
     this.MODE_PARAMS = {
       'crowd-suppress': {
@@ -254,6 +254,7 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
       fluxDen += cur;
       prevMag[k] = cur;
     }
+    prevMag[0] = mag[0];
     const spectralFlux = fluxNum / (fluxDen + this.MIN_EPSILON);
     if (spectralFlux > transientFluxThreshold) this.transientHold[ch] = transientHoldFrames;
     const transientActive = this.transientHold[ch] > 0;
@@ -270,7 +271,7 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
         let suppressScale = 1.0;
         // 对“女声加油”主频段加重抑制
         if (freq >= femaleBandLow && freq <= femaleBandHigh) suppressScale *= femaleSuppressBoost;
-        // 瞬态保护：击球时降低抑制，保留球击台清脆感
+        // 瞬态保护：击球时仅在女声主频段之外放松抑制，避免“加油”声在保护窗口内被放出来
         if (transientActive && (freq < this.TRANSIENT_PROTECT_FREQ_LOW || freq > femaleBandHigh)) {
           suppressScale *= transientProtectScale;
         }
