@@ -63,6 +63,9 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     this.noiseFloor  = Array.from({ length: MAX_CH }, () => new Float32Array(this.HALF).fill(1e-6));
     this.HIST_LEN    = 25;   // 历史帧数（≈ 370 ms @ 512/44100）
     this.NOISE_ALPHA = 0.08; // 噪声底噪平滑系数
+    this.MIN_EPSILON = 1e-8;
+    this.NOISE_EST_SCALE = 1.8;
+    this.TRANSIENT_PROTECT_FREQ_LOW = 420;
     // 模式参数（经验调参值，用于平衡抑制强度与语音自然度）
     this.MODE_PARAMS = {
       'crowd-suppress': {
@@ -207,7 +210,7 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
         if (hist[h][k] < minVal) minVal = hist[h][k];
       }
       // 指数平滑：噪声底噪缓慢向最小值收敛
-      floor[k] = (1 - this.NOISE_ALPHA) * floor[k] + this.NOISE_ALPHA * Math.max(1e-8, minVal);
+      floor[k] = (1 - this.NOISE_ALPHA) * floor[k] + this.NOISE_ALPHA * Math.max(this.MIN_EPSILON, minVal);
     }
 
     // 4. 计算增益并抑制人声频段（频域+时域平滑，降低“兹拉兹拉”音乐噪声）
@@ -250,7 +253,7 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
       fluxDen += cur;
       prevMag[k] = cur;
     }
-    const spectralFlux = fluxNum / (fluxDen + 1e-8);
+    const spectralFlux = fluxNum / (fluxDen + this.MIN_EPSILON);
     if (spectralFlux > transientFluxThreshold) this.transientHold[ch] = transientHoldFrames;
     const transientActive = this.transientHold[ch] > 0;
     if (this.transientHold[ch] > 0) this.transientHold[ch]--;
@@ -261,13 +264,15 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
       outMag[k] = mag[k];
 
       if (freq >= vocalLow && freq <= vocalHigh) {
-        const noiseEst = floor[k] * (1.0 + alpha * 1.8);
-        const curMag = Math.max(mag[k], 1e-8);
+        const noiseEst = floor[k] * (1.0 + alpha * this.NOISE_EST_SCALE);
+        const curMag = Math.max(mag[k], this.MIN_EPSILON);
         let suppressScale = 1.0;
         // 对“女声加油”主频段加重抑制
         if (freq >= femaleBandLow && freq <= femaleBandHigh) suppressScale *= femaleSuppressBoost;
         // 瞬态保护：击球时降低抑制，保留球击台清脆感
-        if (transientActive && (freq < 420 || freq > femaleBandHigh)) suppressScale *= transientProtectScale;
+        if (transientActive && (freq < this.TRANSIENT_PROTECT_FREQ_LOW || freq > femaleBandHigh)) {
+          suppressScale *= transientProtectScale;
+        }
 
         let gain = Math.max(0, 1.0 - (overSub * suppressScale * noiseEst) / curMag);
 
