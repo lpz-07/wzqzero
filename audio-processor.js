@@ -22,6 +22,8 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     this.enabled  = false;
     this.strength = 0.7;   // 0.0（不抑制）~ 1.0（最强抑制）
     this.mode     = 'crowd-suppress'; // 'crowd-suppress' | 'commentary-only' | 'passthrough'
+    this.aiEnabled = false;
+    this.aiSensitivity = 0.55;
 
     // ── FFT 参数 ────────────────────────────────────────────────
     this.FFT_SIZE = 512;
@@ -78,6 +80,9 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
         femaleBandLow: 700,   // 女声“加油”主能量频带
         femaleBandHigh: 2800,
         femaleSuppressBoost: 1.35,
+        femaleBandLowSnrClamp: 1.6, // 女声频段低 SNR 时进一步压低残留，减少乱音
+        femaleBandLowSnrGainCeil: 0.22,
+        femaleBandTimeSmooth: 0.90, // 女声频段增强时域平滑，降低增益抖动伪影
         transientFluxThreshold: 0.55, // 宽带瞬态阈值（保护击球）
         transientHoldFrames: 2,
         transientProtectScale: 0.60,  // 瞬态时降低抑制强度
@@ -92,6 +97,9 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
         femaleBandLow: 650,
         femaleBandHigh: 3200,
         femaleSuppressBoost: 1.45,
+        femaleBandLowSnrClamp: 1.8,
+        femaleBandLowSnrGainCeil: 0.20,
+        femaleBandTimeSmooth: 0.92,
         transientFluxThreshold: 0.60,
         transientHoldFrames: 2,
         transientProtectScale: 0.65,
@@ -116,6 +124,8 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
         this.enabled  = !!e.data.enabled;
         this.strength = e.data.strength ?? 0.7;
         this.mode     = e.data.mode     ?? 'crowd-suppress';
+        this.aiEnabled = !!e.data.aiEnabled;
+        this.aiSensitivity = e.data.aiSensitivity ?? 0.55;
       }
     };
   }
@@ -235,6 +245,9 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     let femaleBandLow = modeParams.femaleBandLow;
     let femaleBandHigh = modeParams.femaleBandHigh;
     let femaleSuppressBoost = modeParams.femaleSuppressBoost;
+    let femaleBandLowSnrClamp = modeParams.femaleBandLowSnrClamp;
+    let femaleBandLowSnrGainCeil = modeParams.femaleBandLowSnrGainCeil;
+    let femaleBandTimeSmooth = modeParams.femaleBandTimeSmooth;
     let transientFluxThreshold = modeParams.transientFluxThreshold;
     let transientHoldFrames = modeParams.transientHoldFrames;
     let transientProtectScale = modeParams.transientProtectScale;
@@ -260,6 +273,55 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     const transientActive = this.transientHold[ch] > 0;
     if (this.transientHold[ch] > 0) this.transientHold[ch]--;
 
+    // 超小型 AI 判别层（无外部模型）：以频带能量比例 + 谱平坦度近似识别“持续加油”帧
+    // 仅输出 0~1 的 cheeringProb，用于动态调节既有抑制强度，不替换主算法链路
+    let cheeringProb = 0.0;
+    if (this.aiEnabled) {
+      const clamp01 = (v) => Math.max(0, Math.min(1, v));
+      const ratioScore = (v, lo, hi) => clamp01((v - lo) / (hi - lo + this.MIN_EPSILON));
+      let totalEnergy = this.MIN_EPSILON;
+      let femaleBandEnergy = this.MIN_EPSILON;
+      let lowBandEnergy = this.MIN_EPSILON;
+      let geomLogSum = 0;
+      let arithSum = 0;
+      let flatBins = 0;
+
+      for (let k = 1; k < HALF; k++) {
+        const freq = k * binHz;
+        const m = Math.max(mag[k], this.MIN_EPSILON);
+        totalEnergy += m;
+        if (freq >= femaleBandLow && freq <= femaleBandHigh) femaleBandEnergy += m;
+        if (freq >= 80 && freq <= 350) lowBandEnergy += m;
+        if (freq >= vocalLow && freq <= vocalHigh) {
+          geomLogSum += Math.log(m);
+          arithSum += m;
+          flatBins++;
+        }
+      }
+
+      const femaleRatio = femaleBandEnergy / totalEnergy;
+      const lowRatio = lowBandEnergy / totalEnergy;
+      const sfm = flatBins > 0 ? Math.exp(geomLogSum / flatBins) / (arithSum / flatBins + this.MIN_EPSILON) : 0;
+      // 经验权重（启发式，面向乒乓直播场景）：
+      //  - femaleRatio 权重最高：加油声在 700~2800Hz 占比通常更高
+      //  - sfm 次之：持续喊叫相较解说更“噪声化”，谱平坦度更高
+      //  - lowPenalty 为负：低频占比偏高常见于击球/环境低频，不应误判为加油声
+      // femaleRatio: [0.12, 0.40] 作为“从常规语音到显著加油占比”的经验映射区间
+      const ratioProb = ratioScore(femaleRatio, 0.12, 0.40);
+      // lowRatio: [0.03, 0.12] 作为“低频偏重（更像击球/环境音）”的惩罚映射区间
+      const lowPenalty = ratioScore(lowRatio, 0.03, 0.12);
+      // sfm: [0.22, 0.58] 作为“从较谐波语音到更噪声化喊叫”的经验映射区间
+      const sfmProb = ratioScore(sfm, 0.22, 0.58);
+      // 组合权重：0.60(女声占比) + 0.35(噪声化程度) - 0.25(低频惩罚)
+      let rawProb = 0.60 * ratioProb + 0.35 * sfmProb - 0.25 * lowPenalty;
+      rawProb = clamp01(rawProb);
+      // 敏感度→阈值映射（0.55 ~ 0.30）：
+      //  - 默认 55% 时阈值中等，减少误触发
+      //  - 提高敏感度会线性降低阈值，使“疑似加油帧”更易触发
+      const th = 0.55 - 0.25 * this.aiSensitivity;
+      cheeringProb = clamp01((rawProb - th) / (1 - th + this.MIN_EPSILON));
+    }
+
     for (let k = 0; k < HALF; k++) {
       const freq = k * binHz;
       rawGain[k] = 1.0;
@@ -271,6 +333,10 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
         let suppressScale = 1.0;
         // 对“女声加油”主频段加重抑制
         if (freq >= femaleBandLow && freq <= femaleBandHigh) suppressScale *= femaleSuppressBoost;
+        // AI 判别到疑似加油帧时，仅在女声主频段进一步加重抑制
+        if (this.aiEnabled && freq >= femaleBandLow && freq <= femaleBandHigh) {
+          suppressScale *= (1.0 + 0.65 * cheeringProb);
+        }
         // 瞬态保护：击球时仅在女声主频段之外放松抑制，避免“加油”声在保护窗口内被放出来
         if (transientActive && (freq < this.TRANSIENT_PROTECT_FREQ_LOW || freq > femaleBandHigh)) {
           suppressScale *= transientProtectScale;
@@ -280,6 +346,10 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
 
         // 瞬态/解说突发保护，减少闷声与抽吸
         if (curMag > noiseEst * transientRatio) gain = Math.max(gain, transientGainFloor);
+        // 女声“加油”主频段：低 SNR 时限制残留增益，减少嘈杂乱音
+        if (freq >= femaleBandLow && freq <= femaleBandHigh && curMag < noiseEst * femaleBandLowSnrClamp) {
+          gain = Math.min(gain, femaleBandLowSnrGainCeil);
+        }
 
         rawGain[k] = Math.min(1.0, Math.max(gainFloor, gain));
       }
@@ -287,19 +357,37 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
 
     // 频域平滑：抑制孤立窄带尖刺（音乐噪声）
     for (let k = 0; k < HALF; k++) {
+      const freq = k * binHz;
+      const inFemaleBand = freq >= femaleBandLow && freq <= femaleBandHigh;
       const l = k > 0 ? k - 1 : k;
       const r = k < HALF - 1 ? k + 1 : k;
-      smoothGain[k] =
-        this.FREQ_SMOOTH.left * rawGain[l] +
-        this.FREQ_SMOOTH.center * rawGain[k] +
-        this.FREQ_SMOOTH.right * rawGain[r];
+      if (inFemaleBand) {
+        const l2 = k > 1 ? k - 2 : k;
+        const r2 = k < HALF - 2 ? k + 2 : k;
+        // 女声频段使用更宽核平滑，抑制窄带“音乐噪声”
+        smoothGain[k] =
+          0.1 * rawGain[l2] +
+          0.2 * rawGain[l] +
+          0.4 * rawGain[k] +
+          0.2 * rawGain[r] +
+          0.1 * rawGain[r2];
+      } else {
+        smoothGain[k] =
+          this.FREQ_SMOOTH.left * rawGain[l] +
+          this.FREQ_SMOOTH.center * rawGain[k] +
+          this.FREQ_SMOOTH.right * rawGain[r];
+      }
     }
 
     // 时域平滑：降低帧间增益抖动导致的“兹拉”感
     for (let k = 0; k < HALF; k++) {
       const freq = k * binHz;
+      const inFemaleBand = freq >= femaleBandLow && freq <= femaleBandHigh;
       if (freq >= vocalLow && freq <= vocalHigh) {
-        const g = timeSmooth * prevGain[k] + (1 - timeSmooth) * smoothGain[k];
+        const localTimeSmooth = inFemaleBand
+          ? Math.max(timeSmooth, femaleBandTimeSmooth)
+          : timeSmooth;
+        const g = localTimeSmooth * prevGain[k] + (1 - localTimeSmooth) * smoothGain[k];
         prevGain[k] = g;
         outMag[k] = mag[k] * g;
       } else {

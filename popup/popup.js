@@ -17,12 +17,17 @@ const statusDot        = document.getElementById('statusDot');
 const statusText       = document.getElementById('statusText');
 const modeButtons      = document.querySelectorAll('.mode-btn');
 const captureModeSelect = document.getElementById('captureModeSelect');
+const aiToggle         = document.getElementById('aiToggle');
+const aiSensitivitySlider = document.getElementById('aiSensitivitySlider');
+const aiSensitivityVal = document.getElementById('aiSensitivityVal');
 const corsWarning      = document.getElementById('corsWarning');
 
 let currentSettings = {
   enabled:     false,
   strength:    70,
   mode:        'crowd-suppress',
+  aiEnabled:   false,
+  aiSensitivity: 55,
   captureMode: 'direct',
 };
 
@@ -63,6 +68,10 @@ function renderUI(settings) {
   enableToggle.checked    = settings.enabled;
   strengthSlider.value    = settings.strength;
   strengthVal.textContent = settings.strength;
+  aiToggle.checked        = !!settings.aiEnabled;
+  aiSensitivitySlider.value = settings.aiSensitivity ?? 55;
+  aiSensitivityVal.textContent = settings.aiSensitivity ?? 55;
+  aiSensitivitySlider.disabled = !settings.aiEnabled;
   captureModeSelect.value = settings.captureMode || 'direct';
 
   modeButtons.forEach((btn) => {
@@ -116,6 +125,20 @@ strengthSlider.addEventListener('input', () => {
   const strength = parseInt(strengthSlider.value, 10);
   strengthVal.textContent = strength;
   sendSettings({ strength });
+});
+
+// AI 开关
+aiToggle.addEventListener('change', () => {
+  const aiEnabled = aiToggle.checked;
+  aiSensitivitySlider.disabled = !aiEnabled;
+  sendSettings({ aiEnabled });
+});
+
+// AI 敏感度滑块
+aiSensitivitySlider.addEventListener('input', () => {
+  const aiSensitivity = parseInt(aiSensitivitySlider.value, 10);
+  aiSensitivityVal.textContent = aiSensitivity;
+  sendSettings({ aiSensitivity });
 });
 
 // 预设模式按钮

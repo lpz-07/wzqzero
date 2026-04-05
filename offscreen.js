@@ -83,11 +83,16 @@ function applySettings(settings) {
     enabled:  settings.enabled,
     strength: (settings.strength ?? 70) / 100,
     mode:     settings.mode ?? 'crowd-suppress',
+    aiEnabled: !!settings.aiEnabled,
+    aiSensitivity: (settings.aiSensitivity ?? 55) / 100,
   });
 }
 
 function updateSettings(settings) {
-  applySettings({ ...{ enabled: true, strength: 70, mode: 'crowd-suppress' }, ...settings });
+  applySettings({
+    ...{ enabled: true, strength: 70, mode: 'crowd-suppress', aiEnabled: false, aiSensitivity: 55 },
+    ...settings,
+  });
 }
 
 function stopProcessing() {
