@@ -69,6 +69,7 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
         overSubScale: 1.3,   // 随 strength 增加的附加过减
         timeSmooth: 0.74,    // 帧间平滑，抑制增益抖动
         transientRatio: 6.0, // 瞬态保护门限，保护解说突发
+        transientGainFloor: 0.75,
       },
       'commentary-only': {
         gainFloor: 0.10,
@@ -76,6 +77,7 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
         overSubScale: 1.6,
         timeSmooth: 0.82,
         transientRatio: 4.5,
+        transientGainFloor: 0.75,
       },
     };
     // 3 点频域平滑核，减少孤立频点“音乐噪声”
@@ -191,7 +193,7 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
         if (hist[h][k] < minVal) minVal = hist[h][k];
       }
       // 指数平滑：噪声底噪缓慢向最小值收敛
-      floor[k] = Math.max(1e-8, (1 - this.NOISE_ALPHA) * floor[k] + this.NOISE_ALPHA * minVal);
+      floor[k] = (1 - this.NOISE_ALPHA) * floor[k] + this.NOISE_ALPHA * Math.max(1e-8, minVal);
     }
 
     // 4. 计算增益并抑制人声频段（频域+时域平滑，降低“兹拉兹拉”音乐噪声）
@@ -211,6 +213,7 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
     let overSub   = modeParams.overSubBase + alpha * modeParams.overSubScale;
     let timeSmooth = modeParams.timeSmooth;
     let transientRatio = modeParams.transientRatio;
+    let transientGainFloor = modeParams.transientGainFloor;
     if (this.mode === 'commentary-only') {
       vocalLow  = 80;
       vocalHigh = 6000;
@@ -224,10 +227,10 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
       if (freq >= vocalLow && freq <= vocalHigh) {
         const noiseEst = floor[k] * (1.0 + alpha * 1.8);
         const curMag = Math.max(mag[k], 1e-8);
-        let gain = 1.0 - (overSub * noiseEst) / curMag;
+        let gain = Math.max(0, 1.0 - (overSub * noiseEst) / curMag);
 
         // 瞬态/解说突发保护，减少闷声与抽吸
-        if (curMag > noiseEst * transientRatio) gain = Math.max(gain, 0.75);
+        if (curMag > noiseEst * transientRatio) gain = Math.max(gain, transientGainFloor);
 
         rawGain[k] = Math.min(1.0, Math.max(gainFloor, gain));
       }
