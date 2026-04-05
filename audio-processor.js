@@ -302,13 +302,18 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
       const femaleRatio = femaleBandEnergy / totalEnergy;
       const lowRatio = lowBandEnergy / totalEnergy;
       const sfm = flatBins > 0 ? Math.exp(geomLogSum / flatBins) / (arithSum / flatBins + this.MIN_EPSILON) : 0;
-      // 经验权重：加油声通常具备较高女声带占比、较低低频占比、且谱更“噪声化”
+      // 经验权重（启发式，面向乒乓直播场景）：
+      //  - femaleRatio 权重最高：加油声在 700~2800Hz 占比通常更高
+      //  - sfm 次之：持续喊叫相较解说更“噪声化”，谱平坦度更高
+      //  - lowPenalty 为负：低频占比偏高常见于击球/环境低频，不应误判为加油声
       const ratioProb = ratioScore(femaleRatio, 0.12, 0.40);
       const lowPenalty = ratioScore(lowRatio, 0.03, 0.12);
       const sfmProb = ratioScore(sfm, 0.22, 0.58);
       let rawProb = 0.60 * ratioProb + 0.35 * sfmProb - 0.25 * lowPenalty;
       rawProb = clamp01(rawProb);
-      // 由敏感度映射触发门限：敏感度越高，越容易判为加油声
+      // 敏感度→阈值映射（0.55 ~ 0.30）：
+      //  - 默认 55% 时阈值中等，减少误触发
+      //  - 提高敏感度会线性降低阈值，使“疑似加油帧”更易触发
       const th = 0.55 - 0.25 * this.aiSensitivity;
       cheeringProb = clamp01((rawProb - th) / (1 - th + this.MIN_EPSILON));
     }
@@ -353,8 +358,8 @@ class NoiseSuppressorProcessor extends AudioWorkletProcessor {
       const l = k > 0 ? k - 1 : k;
       const r = k < HALF - 1 ? k + 1 : k;
       if (inFemaleBand) {
-        const l2 = k > 1 ? k - 2 : l;
-        const r2 = k < HALF - 2 ? k + 2 : r;
+        const l2 = k > 1 ? k - 2 : k;
+        const r2 = k < HALF - 2 ? k + 2 : k;
         // 女声频段使用更宽核平滑，抑制窄带“音乐噪声”
         smoothGain[k] =
           0.1 * rawGain[l2] +
